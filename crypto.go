@@ -3,7 +3,9 @@ package sphinx
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
+	"time"
 
 	"github.com/aead/chacha20"
 	"github.com/btcsuite/btcd/btcec"
@@ -206,13 +208,18 @@ func (o *OnionErrorDecrypter) DecryptError(encryptedData []byte) (*btcec.PublicK
 			return o.circuit.PaymentPath[i], nil, fmt.Errorf("node %v invalid hmac", i)
 		}
 
+		timestamp := time.Unix(0, int64(binary.BigEndian.Uint64(data[:8])))
+
+		fmt.Printf("DEBUG: node %v hmac OK, timestamp: %v\n", i, timestamp)
+
+		data = data[8:]
+
 		if i == len(sharedSecrets)-1 {
 			return o.circuit.PaymentPath[i], data, nil
 		}
 
 		encryptedData = data
 
-		fmt.Printf("DEBUG: intermediate sig %v OK\n", i)
 	}
 
 	panic("should never get here")
@@ -230,13 +237,19 @@ func (o *OnionErrorDecrypter) DecryptError(encryptedData []byte) (*btcec.PublicK
 // away to the nodes in the payment path the information about the exact
 // failure and its origin.
 func (o *OnionErrorEncrypter) EncryptError(initial bool, data []byte) []byte {
+	timestampedData := make([]byte, 8+len(data))
+	binary.BigEndian.PutUint64(
+		timestampedData, uint64(time.Now().UnixNano()),
+	)
+	copy(timestampedData[8:], data)
+
 	if initial {
 		umKey := generateKey("um", &o.sharedSecret)
 		hash := hmac.New(sha256.New, umKey[:])
-		hash.Write(data)
+		hash.Write(timestampedData)
 		h := hash.Sum(nil)
-		data = append(h, data...)
+		timestampedData = append(h, timestampedData...)
 	}
 
-	return onionEncrypt(&o.sharedSecret, data)
+	return onionEncrypt(&o.sharedSecret, timestampedData)
 }
