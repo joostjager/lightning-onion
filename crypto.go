@@ -208,11 +208,12 @@ func (o *OnionErrorDecrypter) DecryptError(encryptedData []byte) (*btcec.PublicK
 			return o.circuit.PaymentPath[i], nil, fmt.Errorf("node %v invalid hmac", i)
 		}
 
-		timestamp := time.Unix(0, int64(binary.BigEndian.Uint64(data[:8])))
+		fwdTimestamp := time.Unix(0, int64(binary.BigEndian.Uint64(data[:8])))
+		bwdTimestamp := time.Unix(0, int64(binary.BigEndian.Uint64(data[8:16])))
 
-		fmt.Printf("DEBUG: node %v hmac OK, timestamp: %v\n", i, timestamp)
+		fmt.Printf("DEBUG: node %v hmac OK, timestamps: add=%v,response=%v\n", i, fwdTimestamp, bwdTimestamp)
 
-		data = data[8:]
+		data = data[16:]
 
 		if i == len(sharedSecrets)-1 {
 			return o.circuit.PaymentPath[i], data, nil
@@ -236,12 +237,15 @@ func (o *OnionErrorDecrypter) DecryptError(encryptedData []byte) (*btcec.PublicK
 // The reason for using onion obfuscation is to not give
 // away to the nodes in the payment path the information about the exact
 // failure and its origin.
-func (o *OnionErrorEncrypter) EncryptError(initial bool, data []byte) []byte {
-	timestampedData := make([]byte, 8+len(data))
+func (o *OnionErrorEncrypter) EncryptError(initial bool, data []byte, fwdTimestamp time.Time) []byte {
+	timestampedData := make([]byte, 16+len(data))
 	binary.BigEndian.PutUint64(
-		timestampedData, uint64(time.Now().UnixNano()),
+		timestampedData, uint64(fwdTimestamp.UnixNano()),
 	)
-	copy(timestampedData[8:], data)
+	binary.BigEndian.PutUint64(
+		timestampedData[8:], uint64(time.Now().UnixNano()),
+	)
+	copy(timestampedData[16:], data)
 
 	if initial {
 		umKey := generateKey("um", &o.sharedSecret)
