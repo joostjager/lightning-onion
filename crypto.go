@@ -193,33 +193,56 @@ func (o *OnionErrorDecrypter) DecryptError(encryptedData []byte) (*btcec.PublicK
 		// encryption from the encrypted error payload.
 		encryptedData = onionEncrypt(&sharedSecret, encryptedData)
 
-		expectedMac := encryptedData[:sha256.Size]
-		data := encryptedData[sha256.Size:]
+		dataLen := len(encryptedData)
+
+		// fmt.Printf("Hop %v: datalen=%v\n", i, dataLen)
 
 		// With the data split, we'll now re-generate the MAC using its
 		// specified key.
 		umKey := generateKey("um", &sharedSecrets[i])
 		h := hmac.New(sha256.New, umKey[:])
-		h.Write(data)
 
-		// If the MAC doesn't match up, then we've the corruption source.
-		realMac := h.Sum(nil)
-		if !hmac.Equal(realMac, expectedMac) {
-			return o.circuit.PaymentPath[i], nil, fmt.Errorf("node %v invalid hmac", i)
+		var expectedMac, timestamps, blob, hmacData []byte
+		if i < len(sharedSecrets)-1 {
+			if dataLen == onionErrorLength {
+				blob = encryptedData
+			} else {
+				// For intermediate hops, the hmac is at the end of the message.
+				expectedMac = encryptedData[dataLen-sha256.Size:]
+				timestamps = encryptedData[dataLen-sha256.Size-16 : dataLen-sha256.Size]
+				hmacData = encryptedData[:dataLen-sha256.Size]
+				blob = encryptedData[:dataLen-sha256.Size-16]
+			}
+		} else {
+			expectedMac = encryptedData[:sha256.Size]
+			blob = encryptedData[sha256.Size:]
+			hmacData = blob
 		}
 
-		fwdTimestamp := time.Unix(0, int64(binary.BigEndian.Uint64(data[:8])))
-		bwdTimestamp := time.Unix(0, int64(binary.BigEndian.Uint64(data[8:16])))
+		if expectedMac != nil {
+			h.Write(hmacData)
 
-		fmt.Printf("DEBUG: node %v hmac OK, timestamps: add=%v,response=%v\n", i, fwdTimestamp, bwdTimestamp)
+			// If the MAC doesn't match up, then we've the corruption source.
+			realMac := h.Sum(nil)
+			if !hmac.Equal(realMac, expectedMac) {
+				return o.circuit.PaymentPath[i], nil, fmt.Errorf("node %v invalid hmac", i)
+			}
 
-		data = data[16:]
+			if i < len(sharedSecrets)-1 {
+				fwdTimestamp := time.Unix(0, int64(binary.BigEndian.Uint64(timestamps[:8])))
+				bwdTimestamp := time.Unix(0, int64(binary.BigEndian.Uint64(timestamps[8:16])))
+
+				fmt.Printf("DEBUG: node %v hmac OK, timestamps: add=%v,response=%v\n", i, fwdTimestamp, bwdTimestamp)
+			}
+		}
 
 		if i == len(sharedSecrets)-1 {
-			return o.circuit.PaymentPath[i], data, nil
+			// fmt.Printf("Failure message encoded: %x\n", hex.EncodeToString(blob))
+
+			return o.circuit.PaymentPath[i], blob, nil
 		}
 
-		encryptedData = data
+		encryptedData = blob
 
 	}
 
@@ -237,23 +260,21 @@ func (o *OnionErrorDecrypter) DecryptError(encryptedData []byte) (*btcec.PublicK
 // The reason for using onion obfuscation is to not give
 // away to the nodes in the payment path the information about the exact
 // failure and its origin.
-func (o *OnionErrorEncrypter) EncryptError(initial bool, data []byte, fwdTimestamp time.Time) []byte {
-	timestampedData := make([]byte, 16+len(data))
-	binary.BigEndian.PutUint64(
-		timestampedData, uint64(fwdTimestamp.UnixNano()),
-	)
-	binary.BigEndian.PutUint64(
-		timestampedData[8:], uint64(time.Now().UnixNano()),
-	)
-	copy(timestampedData[16:], data)
+func (o *OnionErrorEncrypter) EncryptError(initial bool, data []byte) []byte {
+	umKey := generateKey("um", &o.sharedSecret)
+	hash := hmac.New(sha256.New, umKey[:])
+	hash.Write(data)
+	h := hash.Sum(nil)
 
 	if initial {
-		umKey := generateKey("um", &o.sharedSecret)
-		hash := hmac.New(sha256.New, umKey[:])
-		hash.Write(timestampedData)
-		h := hash.Sum(nil)
-		timestampedData = append(h, timestampedData...)
+		// For the initial, prepend the hmac as is expected by all
+		// senders.
+		data = append(h, data...)
+	} else {
+		// Intermediate hops append the hmac, so that the extra data can
+		// be stripped for non-supporting hops.
+		data = append(data, h...)
 	}
 
-	return onionEncrypt(&o.sharedSecret, timestampedData)
+	return onionEncrypt(&o.sharedSecret, data)
 }
