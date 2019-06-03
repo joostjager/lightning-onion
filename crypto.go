@@ -3,9 +3,8 @@ package sphinx
 import (
 	"crypto/hmac"
 	"crypto/sha256"
-	"encoding/binary"
+	"encoding/hex"
 	"fmt"
-	"time"
 
 	"github.com/aead/chacha20"
 	"github.com/btcsuite/btcd/btcec"
@@ -174,15 +173,21 @@ const onionErrorLength = 2 + 2 + 256 + sha256.Size
 // all shared secret and apply decryption in the reverse order.
 //
 // TODO: Run in constant time.
-func (o *OnionErrorDecrypter) DecryptError(encryptedData []byte) (*btcec.PublicKey, []byte, error) {
+func (o *OnionErrorDecrypter) DecryptError(encryptedData []byte) (*btcec.PublicKey, []byte, [][]byte, error) {
 
 	sharedSecrets := generateSharedSecrets(
 		o.circuit.PaymentPath,
 		o.circuit.SessionKey,
 	)
 
+	hopMeta := make([][]byte, len(sharedSecrets)-1)
+
 	// Unwrap the onion for all non-source nodes.
 	for i := 0; i < len(sharedSecrets); i++ {
+		if len(encryptedData) != 1450 {
+			panic("invalid len")
+		}
+
 		// If we've already found the sender, then we'll use our dummy
 		// secret to continue decryption attempts to fill out the rest
 		// of the loop. Otherwise, we'll use the next shared secret in
@@ -193,66 +198,76 @@ func (o *OnionErrorDecrypter) DecryptError(encryptedData []byte) (*btcec.PublicK
 		// encryption from the encrypted error payload.
 		encryptedData = onionEncrypt(&sharedSecret, encryptedData)
 
-		fmt.Printf("Raw data hmac: %x\n", encryptedData[292:292+32])
+		fmt.Printf("DEBUG DECODE INTERMEDIATE:\n%x\n\n", encryptedData)
 
 		// fmt.Printf("Hop %v: datalen=%v\n", i, dataLen)
 
 		// With the data split, we'll now re-generate the MAC using its
 		// specified key.
 		umKey := generateKey("um", &sharedSecrets[i])
-		h := hmac.New(sha256.New, umKey[:])
 
-		var timestamps, blob, expectedMac []byte
-		if i < len(sharedSecrets)-1 {
-			// For intermediate hops, the hmac is at the end of the message.
-			expectedMac = encryptedData[292 : 292+sha256.Size]
-			timestamps = encryptedData[292+sha256.Size : 292+sha256.Size+16]
+		finalH := hmac.New(sha256.New, umKey[:])
+		finalH.Write(encryptedData[sha256.Size:292])
+		expectedFinalMac := encryptedData[:sha256.Size]
+		realFinalMac := finalH.Sum(nil)
+		finalHmacOk := hmac.Equal(realFinalMac, expectedFinalMac)
 
-			h.Write(encryptedData[:292])
-			h.Write(encryptedData[292+sha256.Size:])
+		if finalHmacOk {
+			finalBlob := encryptedData[sha256.Size:292]
+			fmt.Printf("Failure message encoded: %x\n", hex.EncodeToString(finalBlob))
 
-			blob = append(blob, encryptedData[:292]...)
-			blob = append(blob, encryptedData[292+sha256.Size+16:]...)
-
-			// Bring back shifted out padding.
-			pad := make([]byte, sha256.Size+16)
-			blob = append(blob, pad...)
-
-		} else {
-			expectedMac = encryptedData[:sha256.Size]
-			blob = encryptedData[sha256.Size:292]
-			h.Write(blob)
+			return o.circuit.PaymentPath[i], finalBlob, hopMeta, nil
 		}
+
+		// Not the final node
+
+		// For intermediate hops, the hmac is at the end of the message.
+		expectedMac := encryptedData[292 : 292+sha256.Size]
+
+		h := hmac.New(sha256.New, umKey[:])
+		h.Write(encryptedData[:292])
+		h.Write(encryptedData[292+sha256.Size:])
 
 		// If the MAC doesn't match up, then we've the corruption source.
 		realMac := h.Sum(nil)
-		fmt.Printf("Expected hmac: %x\n", expectedMac)
 		hmacOk := hmac.Equal(realMac, expectedMac)
 
-		if i < len(sharedSecrets)-1 {
-			if !hmacOk {
-				fmt.Printf("DEBUG: node %v invalid hmac\n", i)
-			} else {
-				fwdTimestamp := time.Unix(0, int64(binary.BigEndian.Uint64(timestamps[:8])))
-				bwdTimestamp := time.Unix(0, int64(binary.BigEndian.Uint64(timestamps[8:16])))
+		if hmacOk {
+			fmt.Printf("hmac correct at hop %v\n", i)
 
-				fmt.Printf("DEBUG: node %v hmac OK, timestamps: add=%v,response=%v\n", i, fwdTimestamp, bwdTimestamp)
-			}
+			// fwdTimestamp := time.Unix(0, int64(binary.BigEndian.Uint64(timestamps[:8])))
+			// bwdTimestamp := time.Unix(0, int64(binary.BigEndian.Uint64(timestamps[8:16])))
+			// hopMeta[i] = &HopMeta{
+			// 	fwdTimestamp: fwdTimestamp,
+			// 	bwdTimestamp: bwdTimestamp,
+			// }
+			timestamps := encryptedData[292+sha256.Size : 292+sha256.Size+16]
+
+			hopMeta[i] = make([]byte, 16)
+			copy(hopMeta[i], timestamps)
 		} else {
-			if !hmacOk {
-				return o.circuit.PaymentPath[i], nil, fmt.Errorf("final node %v invalid hmac", i)
-			}
-
-			// fmt.Printf("Failure message encoded: %x\n", hex.EncodeToString(blob))
-
-			return o.circuit.PaymentPath[i], blob, nil
+			fmt.Printf("hmac incorrect at hop %v: expected=%x, real=%x\n", i, expectedMac, realMac)
 		}
 
-		encryptedData = blob
+		// } else {
+		// 	if !hmacOk {
+		// 		return o.circuit.PaymentPath[i], nil, fmt.Errorf("final node %v invalid hmac", i)
+		// 	}
 
+		// 	fmt.Printf("Failure message encoded: %x\n", hex.EncodeToString(blob))
+
+		// 	return o.circuit.PaymentPath[i], blob, nil
+		// }
+
+		// Shift left remaining extended failure blocks.
+		blob := make([]byte, 1450)
+		copy(blob, encryptedData[:292])
+		copy(blob[292:], encryptedData[292+sha256.Size+16:])
+
+		encryptedData = blob
 	}
 
-	panic("should never get here")
+	return nil, nil, hopMeta, fmt.Errorf("no error source")
 }
 
 // EncryptError is used to make data obfuscation using the generated shared
@@ -266,37 +281,79 @@ func (o *OnionErrorDecrypter) DecryptError(encryptedData []byte) (*btcec.PublicK
 // The reason for using onion obfuscation is to not give
 // away to the nodes in the payment path the information about the exact
 // failure and its origin.
-func (o *OnionErrorEncrypter) EncryptError(initial bool, data []byte) []byte {
+func (o *OnionErrorEncrypter) EncryptInitial(data []byte) []byte {
+
+	// Finally, we'll add some padding in order to ensure that all failure
+	// messages are fixed size.
+	paddedData := make([]byte, 1450-sha256.Size)
+	copy(paddedData, data)
+
 	umKey := generateKey("um", &o.sharedSecret)
 	hash := hmac.New(sha256.New, umKey[:])
 
 	var dataWithHmac []byte
 
-	if initial {
-		hash.Write(data[:260])
-		h := hash.Sum(nil)
+	hash.Write(paddedData[:260])
+	h := hash.Sum(nil)
 
-		// For the initial, prepend the hmac as is expected by all
-		// senders.
-		dataWithHmac = append(dataWithHmac, h...)
-		dataWithHmac = append(dataWithHmac, data...)
-	} else {
-		hash.Write(data)
-		h := hash.Sum(nil)
+	// For the initial, prepend the hmac as is expected by all
+	// senders.
+	dataWithHmac = append(dataWithHmac, h...)
+	dataWithHmac = append(dataWithHmac, paddedData...)
 
-		// Intermediate hops append the hmac, so that the extra data can
-		// be stripped for non-supporting hops.
-		dataWithHmac = append(dataWithHmac, data[:292]...)
-		dataWithHmac = append(dataWithHmac, h...)
-		dataWithHmac = append(dataWithHmac, data[292:]...)
-	}
-
-	fmt.Printf("EncryptError: initial=%v, len=%v, hmac=%x\n", initial, len(dataWithHmac), hash.Sum(nil))
-	fmt.Printf("Raw data hmac: %x\n", dataWithHmac[292:292+32])
+	fmt.Printf("EncryptInitial: len=%v, hmac=%x\n", len(dataWithHmac), hash.Sum(nil))
 
 	if len(dataWithHmac) != 1450 {
 		panic("fatal")
 	}
+
+	return onionEncrypt(&o.sharedSecret, dataWithHmac)
+}
+
+func (o *OnionErrorEncrypter) EncryptIntermediate(blobIn, data []byte) []byte {
+	if len(blobIn) != 1450 {
+		panic("fatal: blobIn incorrect len")
+	}
+
+	blobIn1 := blobIn[:292]
+	blobIn2 := blobIn[292 : len(blobIn)-sha256.Size-len(data)]
+	umKey := generateKey("um", &o.sharedSecret)
+	hash := hmac.New(sha256.New, umKey[:])
+
+	// Calc hash over everyhing except our own hmac.
+	hash.Write(blobIn1)
+	hash.Write(data)
+	hash.Write(blobIn2)
+	h := hash.Sum(nil)
+
+	// Intermediate hops append the hmac, so that the extra data can
+	// be stripped for non-supporting hops.
+	var dataWithHmac []byte
+	dataWithHmac = append(dataWithHmac, blobIn1...)
+	dataWithHmac = append(dataWithHmac, h...)
+	dataWithHmac = append(dataWithHmac, data...)
+	dataWithHmac = append(dataWithHmac, blobIn2...)
+
+	fmt.Printf("EncryptIntermediate: len=%v, hmac=%x\n", len(dataWithHmac), h)
+
+	if len(dataWithHmac) != 1450 {
+		panic("fatal")
+	}
+
+	// expectedMac := dataWithHmac[292 : 292+sha256.Size]
+
+	// h2 := hmac.New(sha256.New, umKey[:])
+	// h2.Write(dataWithHmac[:292])
+	// h2.Write(dataWithHmac[292+sha256.Size:])
+
+	// // If the MAC doesn't match up, then we've the corruption source.
+	// realMac := h2.Sum(nil)
+	// hmacOk := hmac.Equal(realMac, expectedMac)
+	// if !hmacOk {
+	// 	panic("hmac error")
+	// }
+
+	fmt.Printf("DEBUG INTERMEDIATE:\n%x\n\n", dataWithHmac)
 
 	return onionEncrypt(&o.sharedSecret, dataWithHmac)
 }

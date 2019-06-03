@@ -2,7 +2,7 @@ package sphinx
 
 import (
 	"bytes"
-	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"reflect"
 	"testing"
@@ -14,7 +14,7 @@ import (
 // obfuscated onion error.
 func TestOnionFailure(t *testing.T) {
 	// Create numHops random sphinx paymentPath.
-	paymentPath := make([]*btcec.PublicKey, 5)
+	paymentPath := make([]*btcec.PublicKey, 3)
 	for i := 0; i < len(paymentPath); i++ {
 		privKey, err := btcec.NewPrivateKey(btcec.S256())
 		if err != nil {
@@ -27,9 +27,9 @@ func TestOnionFailure(t *testing.T) {
 
 	// Reduce the error path on one node, in order to check that we are
 	// able to receive the error not only from last hop.
-	errorPath := paymentPath[:len(paymentPath)-1]
+	errorPath := paymentPath[:len(paymentPath)]
 
-	failureData := bytes.Repeat([]byte{'A'}, onionErrorLength-sha256.Size)
+	failureData := bytes.Repeat([]byte{'A'}, 20)
 	sharedSecrets := generateSharedSecrets(paymentPath, sessionKey)
 
 	// Emulate creation of the obfuscator on node where error have occurred.
@@ -39,7 +39,15 @@ func TestOnionFailure(t *testing.T) {
 
 	// Emulate the situation when last hop creates the onion failure
 	// message and send it back.
-	obfuscatedData := obfuscator.EncryptError(true, failureData)
+	obfuscatedData := obfuscator.EncryptInitial(failureData)
+
+	timestamps := make([]byte, 16)
+	binary.BigEndian.PutUint64(
+		timestamps, 0,
+	)
+	binary.BigEndian.PutUint64(
+		timestamps[8:], 1,
+	)
 
 	// Emulate that failure message is backward obfuscated on every hop.
 	for i := len(errorPath) - 2; i >= 0; i-- {
@@ -48,7 +56,8 @@ func TestOnionFailure(t *testing.T) {
 		obfuscator = &OnionErrorEncrypter{
 			sharedSecret: sharedSecrets[i],
 		}
-		obfuscatedData = obfuscator.EncryptError(false, obfuscatedData)
+
+		obfuscatedData = obfuscator.EncryptIntermediate(obfuscatedData, timestamps)
 	}
 
 	// Emulate creation of the deobfuscator on the receiving onion error side.
@@ -59,9 +68,15 @@ func TestOnionFailure(t *testing.T) {
 
 	// Emulate that sender node receive the failure message and trying to
 	// unwrap it, by applying obfuscation and checking the hmac.
-	pubKey, deobfuscatedData, err := deobfuscator.DecryptError(obfuscatedData)
+	pubKey, deobfuscatedData, hopMeta, err := deobfuscator.DecryptError(obfuscatedData)
 	if err != nil {
 		t.Fatalf("unable to de-obfuscate the onion failure: %v", err)
+	}
+
+	for i := 0; i < len(errorPath)-1; i++ {
+		if !bytes.Equal(hopMeta[i], timestamps) {
+			t.Fatalf("invalid intermediate hop data")
+		}
 	}
 
 	// We should understand the node from which error have been received.
@@ -72,7 +87,7 @@ func TestOnionFailure(t *testing.T) {
 	}
 
 	// Check that message have been properly de-obfuscated.
-	if !bytes.Equal(deobfuscatedData, failureData) {
+	if !bytes.Equal(deobfuscatedData[:len(failureData)], failureData) {
 		t.Fatalf("data not equals, expected: \"%v\", real: \"%v\"",
 			string(failureData), string(deobfuscatedData))
 	}
@@ -227,11 +242,11 @@ func TestOnionFailureSpecVector(t *testing.T) {
 		if i == 0 {
 			// Emulate the situation when last hop creates the onion failure
 			// message and send it back.
-			obfuscatedData = obfuscator.EncryptError(true, failureData)
+			obfuscatedData = obfuscator.EncryptInitial(failureData)
 		} else {
 			// Emulate the situation when forward node obfuscates
 			// the onion failure.
-			obfuscatedData = obfuscator.EncryptError(false, obfuscatedData)
+			obfuscatedData = obfuscator.EncryptIntermediate(nil, obfuscatedData)
 		}
 
 		// Decode the obfuscated data and check that it matches the
@@ -255,7 +270,7 @@ func TestOnionFailureSpecVector(t *testing.T) {
 
 	// Emulate that sender node receives the failure message and trying to
 	// unwrap it, by applying obfuscation and checking the hmac.
-	pubKey, deobfuscatedData, err := deobfuscator.DecryptError(obfuscatedData)
+	pubKey, deobfuscatedData, _, err := deobfuscator.DecryptError(obfuscatedData)
 	if err != nil {
 		t.Fatalf("unable to de-obfuscate the onion failure: %v", err)
 	}
