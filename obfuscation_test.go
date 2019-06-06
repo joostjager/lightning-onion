@@ -14,7 +14,7 @@ import (
 // obfuscated onion error.
 func TestOnionFailure(t *testing.T) {
 	// Create numHops random sphinx paymentPath.
-	paymentPath := make([]*btcec.PublicKey, 3)
+	paymentPath := make([]*btcec.PublicKey, 10)
 	for i := 0; i < len(paymentPath); i++ {
 		privKey, err := btcec.NewPrivateKey(btcec.S256())
 		if err != nil {
@@ -57,7 +57,12 @@ func TestOnionFailure(t *testing.T) {
 			sharedSecret: sharedSecrets[i],
 		}
 
+		if i == 2 {
+			obfuscatedData[292+20*48+48] = 2
+		}
+
 		obfuscatedData = obfuscator.EncryptIntermediate(obfuscatedData, timestamps)
+
 	}
 
 	// Emulate creation of the deobfuscator on the receiving onion error side.

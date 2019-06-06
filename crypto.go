@@ -184,7 +184,7 @@ func (o *OnionErrorDecrypter) DecryptError(encryptedData []byte) (*btcec.PublicK
 
 	// Unwrap the onion for all non-source nodes.
 	for i := 0; i < len(sharedSecrets); i++ {
-		if len(encryptedData) != 1450 {
+		if len(encryptedData) != 2212 {
 			panic("invalid len")
 		}
 
@@ -198,7 +198,7 @@ func (o *OnionErrorDecrypter) DecryptError(encryptedData []byte) (*btcec.PublicK
 		// encryption from the encrypted error payload.
 		encryptedData = onionEncrypt(&sharedSecret, encryptedData)
 
-		fmt.Printf("DEBUG DECODE INTERMEDIATE:\n%x\n\n", encryptedData)
+		// fmt.Printf("DEBUG DECODE INTERMEDIATE:\n%x\n\n", encryptedData)
 
 		// fmt.Printf("Hop %v: datalen=%v\n", i, dataLen)
 
@@ -226,7 +226,7 @@ func (o *OnionErrorDecrypter) DecryptError(encryptedData []byte) (*btcec.PublicK
 
 		h := hmac.New(sha256.New, umKey[:])
 		h.Write(encryptedData[:292])
-		h.Write(encryptedData[292+sha256.Size:])
+		h.Write(encryptedData[292+sha256.Size : 292+960])
 
 		// If the MAC doesn't match up, then we've the corruption source.
 		realMac := h.Sum(nil)
@@ -260,7 +260,7 @@ func (o *OnionErrorDecrypter) DecryptError(encryptedData []byte) (*btcec.PublicK
 		// }
 
 		// Shift left remaining extended failure blocks.
-		blob := make([]byte, 1450)
+		blob := make([]byte, 2212)
 		copy(blob, encryptedData[:292])
 		copy(blob[292:], encryptedData[292+sha256.Size+16:])
 
@@ -285,7 +285,7 @@ func (o *OnionErrorEncrypter) EncryptInitial(data []byte) []byte {
 
 	// Finally, we'll add some padding in order to ensure that all failure
 	// messages are fixed size.
-	paddedData := make([]byte, 1450-sha256.Size)
+	paddedData := make([]byte, 2212-sha256.Size)
 	copy(paddedData, data)
 
 	umKey := generateKey("um", &o.sharedSecret)
@@ -303,7 +303,7 @@ func (o *OnionErrorEncrypter) EncryptInitial(data []byte) []byte {
 
 	fmt.Printf("EncryptInitial: len=%v, hmac=%x\n", len(dataWithHmac), hash.Sum(nil))
 
-	if len(dataWithHmac) != 1450 {
+	if len(dataWithHmac) != 2212 {
 		panic("fatal")
 	}
 
@@ -311,7 +311,7 @@ func (o *OnionErrorEncrypter) EncryptInitial(data []byte) []byte {
 }
 
 func (o *OnionErrorEncrypter) EncryptIntermediate(blobIn, data []byte) []byte {
-	if len(blobIn) != 1450 {
+	if len(blobIn) != 2212 {
 		panic("fatal: blobIn incorrect len")
 	}
 
@@ -323,7 +323,7 @@ func (o *OnionErrorEncrypter) EncryptIntermediate(blobIn, data []byte) []byte {
 	// Calc hash over everyhing except our own hmac.
 	hash.Write(blobIn1)
 	hash.Write(data)
-	hash.Write(blobIn2)
+	hash.Write(blobIn2[:960-len(data)-sha256.Size])
 	h := hash.Sum(nil)
 
 	// Intermediate hops append the hmac, so that the extra data can
@@ -336,7 +336,7 @@ func (o *OnionErrorEncrypter) EncryptIntermediate(blobIn, data []byte) []byte {
 
 	fmt.Printf("EncryptIntermediate: len=%v, hmac=%x\n", len(dataWithHmac), h)
 
-	if len(dataWithHmac) != 1450 {
+	if len(dataWithHmac) != 2212 {
 		panic("fatal")
 	}
 
@@ -353,7 +353,7 @@ func (o *OnionErrorEncrypter) EncryptIntermediate(blobIn, data []byte) []byte {
 	// 	panic("hmac error")
 	// }
 
-	fmt.Printf("DEBUG INTERMEDIATE:\n%x\n\n", dataWithHmac)
+	// fmt.Printf("DEBUG INTERMEDIATE:\n%x\n\n", dataWithHmac)
 
 	return onionEncrypt(&o.sharedSecret, dataWithHmac)
 }
