@@ -1,7 +1,6 @@
 package sphinx
 
 import (
-	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"errors"
@@ -206,30 +205,17 @@ func (o *OnionErrorDecrypter) DecryptError(encryptedData []byte) (
 	)
 
 	var (
-		sender      int
-		msg         []byte
-		dummySecret Hash256
+		sender int
+		msg    []byte
 	)
-	copy(dummySecret[:], bytes.Repeat([]byte{1}, 32))
 
 	// We'll iterate a constant amount of hops to ensure that we don't give
 	// away an timing information pertaining to the position in the route
 	// that the error emanated from.
-	for i := 0; i < NumMaxHops; i++ {
-		var sharedSecret Hash256
-
-		// If we've already found the sender, then we'll use our dummy
-		// secret to continue decryption attempts to fill out the rest
-		// of the loop. Otherwise, we'll use the next shared secret in
-		// line.
-		if sender != 0 || i > len(sharedSecrets)-1 {
-			sharedSecret = dummySecret
-		} else {
-			sharedSecret = sharedSecrets[i]
-		}
-
-		// With the shared secret, we'll now strip off a layer of
-		// encryption from the encrypted error payload.
+	for i := 0; i < len(o.circuit.PaymentPath); i++ {
+		// With the shared secret, we'll strip off a layer of encryption
+		// from the encrypted error payload.
+		sharedSecret := sharedSecrets[i]
 		encryptedData = onionEncrypt(&sharedSecret, encryptedData)
 
 		// Next, we'll need to separate the data, from the MAC itself
@@ -241,14 +227,19 @@ func (o *OnionErrorDecrypter) DecryptError(encryptedData []byte) (
 		// specified key.
 		umKey := generateKey("um", &sharedSecret)
 		h := hmac.New(sha256.New, umKey[:])
-		h.Write(data)
+		_, err := h.Write(data)
+		if err != nil {
+			return nil, err
+		}
 
 		// If the MAC matches up, then we've found the sender of the
 		// error and have also obtained the fully decrypted message.
 		realMac := h.Sum(nil)
-		if hmac.Equal(realMac, expectedMac) && sender == 0 {
+		if hmac.Equal(realMac, expectedMac) {
 			sender = i + 1
 			msg = data
+
+			break
 		}
 	}
 
