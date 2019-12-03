@@ -26,7 +26,7 @@ type OnionSpec struct {
 	Hops       []OnionHopSpec `json:"hops"`
 }
 
-func parseOnionSpec(spec OnionSpec) (*sphinx.PaymentPath, *btcec.PrivateKey, error) {
+func parseOnionSpec(spec OnionSpec) (sphinx.PaymentPath, *btcec.PrivateKey, error) {
 	var path sphinx.PaymentPath
 	var binSessionKey []byte
 	var err error
@@ -57,7 +57,7 @@ func parseOnionSpec(spec OnionSpec) (*sphinx.PaymentPath, *btcec.PrivateKey, err
 			log.Fatalf("%s is not a valid hex pubkey %s", hop.PublicKey, err)
 		}
 
-		path[i].NodePub = *pubkey
+		path = append(path, sphinx.OnionHop{NodePub: *pubkey})
 
 		payload, err := hex.DecodeString(hop.Payload)
 		if err != nil {
@@ -74,7 +74,7 @@ func parseOnionSpec(spec OnionSpec) (*sphinx.PaymentPath, *btcec.PrivateKey, err
 
 		fmt.Fprintf(os.Stderr, "Node %d pubkey %x\n", i, pubkey.SerializeCompressed())
 	}
-	return &path, sessionKey, nil
+	return path, sessionKey, nil
 }
 
 // main implements a simple command line utility that can be used in order to

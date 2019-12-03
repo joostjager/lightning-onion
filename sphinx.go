@@ -189,7 +189,7 @@ func generateSharedSecrets(paymentPath []*btcec.PublicKey,
 
 // NewOnionPacket creates a new onion packet which is capable of obliviously
 // routing a message through the mix-net path outline by 'paymentPath'.
-func NewOnionPacket(paymentPath *PaymentPath, sessionKey *btcec.PrivateKey,
+func NewOnionPacket(paymentPath PaymentPath, sessionKey *btcec.PrivateKey,
 	assocData []byte) (*OnionPacket, error) {
 
 	// Check whether total payload size doesn't exceed hard maximum.
@@ -197,7 +197,7 @@ func NewOnionPacket(paymentPath *PaymentPath, sessionKey *btcec.PrivateKey,
 		return nil, errMaxRoutingInfoSizeExceeded
 	}
 
-	numHops := paymentPath.TrueRouteLength()
+	numHops := len(paymentPath)
 
 	hopSharedSecrets := generateSharedSecrets(
 		paymentPath.NodeKeys(), sessionKey,
@@ -300,8 +300,8 @@ func rightShift(slice []byte, num int) {
 // leaving only the original "filler" bytes produced by this function at the
 // last hop.  Using this methodology, the size of the field stays constant at
 // each hop.
-func generateHeaderPadding(key string, path *PaymentPath, sharedSecrets []Hash256) []byte {
-	numHops := path.TrueRouteLength()
+func generateHeaderPadding(key string, path PaymentPath, sharedSecrets []Hash256) []byte {
+	numHops := len(path)
 
 	// We have to generate a filler that matches all but the last hop (the
 	// last hop won't generate an HMAC)

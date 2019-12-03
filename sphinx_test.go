@@ -121,10 +121,10 @@ func newTestRoute(numHops int) ([]*Router, *PaymentPath, *[]HopData, *OnionPacke
 				"create new hop payload: %v", err)
 		}
 
-		route[i] = OnionHop{
+		route = append(route, OnionHop{
 			NodePub:    *nodes[i].onionKey.PubKey(),
 			HopPayload: hopPayload,
-		}
+		})
 	}
 
 	// Generate a forwarding message to route to the final node via the
@@ -133,7 +133,7 @@ func newTestRoute(numHops int) ([]*Router, *PaymentPath, *[]HopData, *OnionPacke
 	sessionKey, _ := btcec.PrivKeyFromBytes(
 		btcec.S256(), bytes.Repeat([]byte{'A'}, 32),
 	)
-	fwdMsg, err := NewOnionPacket(&route, sessionKey, nil)
+	fwdMsg, err := NewOnionPacket(route, sessionKey, nil)
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("unable to create "+
 			"forwarding message: %#v", err)
@@ -183,10 +183,10 @@ func TestBolt4Packet(t *testing.T) {
 
 		pubKey.Curve = nil
 
-		route[i] = OnionHop{
+		route = append(route, OnionHop{
 			NodePub:    *pubKey,
 			HopPayload: hopPayload,
-		}
+		})
 	}
 
 	finalPacket, err := hex.DecodeString(bolt4FinalPacketHex)
@@ -196,7 +196,7 @@ func TestBolt4Packet(t *testing.T) {
 	}
 
 	sessionKey, _ := btcec.PrivKeyFromBytes(btcec.S256(), bolt4SessionKey)
-	pkt, err := NewOnionPacket(&route, sessionKey, bolt4AssocData)
+	pkt, err := NewOnionPacket(route, sessionKey, bolt4AssocData)
 	if err != nil {
 		t.Fatalf("unable to construct onion packet: %v", err)
 	}
@@ -549,10 +549,10 @@ func newEOBRoute(numHops uint32,
 		route PaymentPath
 	)
 	for i := 0; i < len(nodes); i++ {
-		route[i] = OnionHop{
+		route = append(route, OnionHop{
 			NodePub:    *nodes[i].onionKey.PubKey(),
 			HopPayload: eobMapping[i],
-		}
+		})
 	}
 
 	// Generate a forwarding message to route to the final node via the
@@ -561,7 +561,7 @@ func newEOBRoute(numHops uint32,
 	sessionKey, _ := btcec.PrivKeyFromBytes(
 		btcec.S256(), bytes.Repeat([]byte{'A'}, 32),
 	)
-	fwdMsg, err := NewOnionPacket(&route, sessionKey, nil)
+	fwdMsg, err := NewOnionPacket(route, sessionKey, nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("unable to create forwarding "+
 			"message: %#v", err)
@@ -857,7 +857,7 @@ func TestVariablePayloadOnion(t *testing.T) {
 		}
 
 		payloadType := jsonTypeToPayloadType(hop.Type)
-		route[i] = OnionHop{
+		hop := OnionHop{
 			NodePub: *pubKey,
 			HopPayload: HopPayload{
 				Type:    payloadType,
@@ -866,15 +866,17 @@ func TestVariablePayloadOnion(t *testing.T) {
 		}
 
 		if payloadType == PayloadLegacy {
-			route[i].HopPayload.Payload = append(
-				[]byte{0x00}, route[i].HopPayload.Payload...,
+			hop.HopPayload.Payload = append(
+				[]byte{0x00}, hop.HopPayload.Payload...,
 			)
 
-			route[i].HopPayload.Payload = append(
-				route[i].HopPayload.Payload,
+			hop.HopPayload.Payload = append(
+				hop.HopPayload.Payload,
 				bytes.Repeat([]byte{0x00}, NumPaddingBytes)...,
 			)
 		}
+
+		route = append(route, hop)
 	}
 
 	finalPacket, err := hex.DecodeString(testCase.Onion)
@@ -894,7 +896,7 @@ func TestVariablePayloadOnion(t *testing.T) {
 
 	// With all the required data assembled, we'll craft a new packet.
 	sessionKey, _ := btcec.PrivKeyFromBytes(btcec.S256(), sessionKeyBytes)
-	pkt, err := NewOnionPacket(&route, sessionKey, associatedData)
+	pkt, err := NewOnionPacket(route, sessionKey, associatedData)
 	if err != nil {
 		t.Fatalf("unable to construct onion packet: %v", err)
 	}

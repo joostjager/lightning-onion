@@ -38,10 +38,10 @@ func BenchmarkPathPacketConstruction(b *testing.B) {
 			b.Fatalf("unable to create new hop payload: %v", err)
 		}
 
-		route[i] = OnionHop{
+		route = append(route, OnionHop{
 			NodePub:    *privKey.PubKey(),
 			HopPayload: hopPayload,
-		}
+		})
 	}
 
 	d, _ := btcec.PrivKeyFromBytes(btcec.S256(), bytes.Repeat([]byte{'A'}, 32))
@@ -51,7 +51,7 @@ func BenchmarkPathPacketConstruction(b *testing.B) {
 	b.StartTimer()
 
 	for i := 0; i < b.N; i++ {
-		sphinxPacket, err = NewOnionPacket(&route, d, nil)
+		sphinxPacket, err = NewOnionPacket(route, d, nil)
 		if err != nil {
 			b.Fatalf("unable to create packet: %v", err)
 		}

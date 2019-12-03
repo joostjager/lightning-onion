@@ -318,7 +318,7 @@ const NumMaxHops = 20
 // order to do this, we encrypt the several hops with the same node public key,
 // and unroll the extra data into the space used for route forwarding
 // information.
-type PaymentPath [NumMaxHops]OnionHop
+type PaymentPath []OnionHop
 
 // OnionHop represents an abstract hop (a link between two nodes) within the
 // Lightning Network. A hop is composed of the incoming node (able to decrypt
@@ -337,53 +337,26 @@ type OnionHop struct {
 	HopPayload HopPayload
 }
 
-// IsEmpty returns true if the hop isn't populated.
-func (o OnionHop) IsEmpty() bool {
-	return o.NodePub.X == nil || o.NodePub.Y == nil
-}
-
 // NodeKeys returns a slice pointing to node keys that this route comprises of.
 // The size of the returned slice will be TrueRouteLength().
-func (p *PaymentPath) NodeKeys() []*btcec.PublicKey {
-	var nodeKeys [NumMaxHops]*btcec.PublicKey
+func (p PaymentPath) NodeKeys() []*btcec.PublicKey {
+	nodeKeys := make([]*btcec.PublicKey, len(p))
 
-	routeLen := p.TrueRouteLength()
-	for i := 0; i < routeLen; i++ {
-		nodeKeys[i] = &p[i].NodePub
+	for i, hop := range p {
+		// Copy key to prevent binding bug.
+		key := hop.NodePub
+
+		nodeKeys[i] = &key
 	}
 
-	return nodeKeys[:routeLen]
-}
-
-// TrueRouteLength returns the "true" length of the PaymentPath. The max
-// payment path is NumMaxHops size, but in practice routes are much smaller.
-// This method will return the number of actual hops (nodes) involved in this
-// route. For references, a direct path has a length of 1, path through an
-// intermediate node has a length of 2 (3 nodes involved).
-func (p *PaymentPath) TrueRouteLength() int {
-	var routeLength int
-	for _, hop := range p {
-		// When we hit the first empty hop, we know we're now in the
-		// zero'd out portion of the array.
-		if hop.IsEmpty() {
-			return routeLength
-		}
-
-		routeLength++
-	}
-
-	return routeLength
+	return nodeKeys
 }
 
 // TotalPayloadSize returns the sum of the size of each payload in the "true"
 // route.
-func (p *PaymentPath) TotalPayloadSize() int {
+func (p PaymentPath) TotalPayloadSize() int {
 	var totalSize int
 	for _, hop := range p {
-		if hop.IsEmpty() {
-			continue
-		}
-
 		totalSize += hop.HopPayload.NumBytes()
 	}
 
