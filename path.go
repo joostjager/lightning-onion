@@ -304,12 +304,6 @@ func (hp *HopPayload) HopData() (*HopData, error) {
 	return &hd, nil
 }
 
-// NumMaxHops is the maximum path length. This should be set to an estimate of
-// the upper limit of the diameter of the node graph.
-//
-// TODO(roasbeef): adjust due to var-payloads?
-const NumMaxHops = 20
-
 // PaymentPath represents a series of hops within the Lightning Network
 // starting at a sender and terminating at a receiver. Each hop contains a set
 // of mandatory data which contains forwarding instructions for that hop.
