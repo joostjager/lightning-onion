@@ -229,7 +229,12 @@ func onionEncrypt(sharedSecret *Hash256, data []byte) []byte {
 	p := make([]byte, len(data))
 
 	ammagKey := generateKey("ammag", sharedSecret)
+
+	fmt.Printf("\tammag_key = %x\n", ammagKey)
+
 	streamBytes := generateCipherStream(ammagKey, uint(len(data)))
+
+	fmt.Printf("\tstream = %x\n", streamBytes)
 	xor(p, data, streamBytes)
 
 	return p
@@ -338,12 +343,24 @@ func (o *OnionErrorDecrypter) DecryptError(encryptedData []byte) (
 // failure and its origin.
 func (o *OnionErrorEncrypter) EncryptError(initial bool, data []byte) []byte {
 	if initial {
+		fmt.Printf("\tshared_secret = %x\n", o.sharedSecret)
+
+		fmt.Printf("\tpayload = %x\n", data)
+
 		umKey := generateKey("um", &o.sharedSecret)
+
+		fmt.Printf("\tum_key = %x\n", umKey)
+
 		hash := hmac.New(sha256.New, umKey[:])
 		hash.Write(data)
 		h := hash.Sum(nil)
 		data = append(h, data...)
+
+		fmt.Printf("\traw_error_packet = %x\n", data)
 	}
+
+	fmt.Println("\t# forwarding error packet")
+	fmt.Printf("\tshared_secret = %x\n", o.sharedSecret)
 
 	return onionEncrypt(&o.sharedSecret, data)
 }
