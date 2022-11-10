@@ -61,8 +61,8 @@ func (p *PrivKeyECDH) PubKey() *btcec.PublicKey {
 // k is our private key, and P is the public key, we perform the following
 // operation:
 //
-//  sx := k*P
-//  s := sha256(sx.SerializeCompressed())
+//	sx := k*P
+//	s := sha256(sx.SerializeCompressed())
 //
 // NOTE: This is part of the SingleKeyECDH interface.
 func (p *PrivKeyECDH) ECDH(pub *btcec.PublicKey) ([32]byte, error) {
@@ -92,6 +92,10 @@ type DecryptedError struct {
 
 	// Message is the decrypted error message.
 	Message []byte
+
+	// HoldTimesMs is an array of millisecond durations reported by each node on
+	// the (error) path.
+	HoldTimesMs []uint64
 }
 
 // zeroHMAC is the special HMAC value that allows the final node to determine
