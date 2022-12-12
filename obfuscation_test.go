@@ -3,11 +3,15 @@ package sphinx
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
-	"reflect"
+	"encoding/json"
+	"fmt"
+	"os"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/stretchr/testify/require"
 )
 
 // TestOnionFailure checks the ability of sender of payment to decode the
@@ -167,8 +171,11 @@ func getSpecSessionKey() (*btcec.PrivateKey, error) {
 	return privKey, nil
 }
 
+var sData = "0140400f0000000000000064000c3500fd84d1fd012c80808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808080808002c00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+
 func getSpecOnionErrorData() ([]byte, error) {
-	sData := "0002200200fe0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+	// https://github.com/lightningnetwork/lnd/compare/master...bottlepay:lnd:failure-message-test-vector
+
 	return hex.DecodeString(sData)
 }
 
@@ -196,6 +203,9 @@ func TestOnionFailureSpecVector(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error while generating secrets: %v", err)
 	}
+
+	var hops []specHop
+
 	for i, test := range onionErrorData {
 		// Decode the shared secret and check that it matchs with
 		// specification.
@@ -204,24 +214,10 @@ func TestOnionFailureSpecVector(t *testing.T) {
 			t.Fatalf("unable to decode spec shared secret: %v",
 				err)
 		}
-		obfuscator := NewOnionErrorEncrypter(
+		obfuscator := NewOnionAttrErrorEncrypter(
 			sharedSecrets[len(sharedSecrets)-1-i],
+			attributableErrorTestStructure,
 		)
-
-		var b bytes.Buffer
-		if err := obfuscator.Encode(&b); err != nil {
-			t.Fatalf("unable to encode obfuscator: %v", err)
-		}
-
-		obfuscator2 := NewOnionErrorEncrypter(Hash256{})
-		obfuscatorReader := bytes.NewReader(b.Bytes())
-		if err := obfuscator2.Decode(obfuscatorReader); err != nil {
-			t.Fatalf("unable to decode obfuscator: %v", err)
-		}
-
-		if !reflect.DeepEqual(obfuscator, obfuscator2) {
-			t.Fatalf("unable to reconstruct obfuscator: %v", err)
-		}
 
 		if !bytes.Equal(expectedSharedSecret, obfuscator.sharedSecret[:]) {
 			t.Fatalf("shared secret not match with spec: expected "+
@@ -229,57 +225,47 @@ func TestOnionFailureSpecVector(t *testing.T) {
 				obfuscator.sharedSecret[:])
 		}
 
+		var payload [8]byte
+		binary.BigEndian.PutUint64(payload[:], uint64(i+1))
 		if i == 0 {
 			// Emulate the situation when last hop creates the onion failure
 			// message and send it back.
-			obfuscatedData = obfuscator.EncryptError(true, failureData)
+			obfuscatedData, err = obfuscator.EncryptError(true, failureData, payload[:])
+			require.NoError(t, err)
 		} else {
 			// Emulate the situation when forward node obfuscates
 			// the onion failure.
-			obfuscatedData = obfuscator.EncryptError(false, obfuscatedData)
+			obfuscatedData, err = obfuscator.EncryptError(false, obfuscatedData, payload[:])
+			require.NoError(t, err)
 		}
+		fmt.Printf("\terror packet for node %v: %x\n", len(sharedSecrets)-1-i, obfuscatedData)
+
+		hops = append(hops, specHop{
+			SharedSecret:     test.sharedSecret,
+			EncryptedMessage: hex.EncodeToString(obfuscatedData),
+		})
 
 		// Decode the obfuscated data and check that it matches the
 		// specification.
-		expectedEncryptErrordData, err := hex.DecodeString(test.obfuscatedData)
-		if err != nil {
-			t.Fatalf("unable to decode spec obfusacted "+
-				"data: %v", err)
-		}
-		if !bytes.Equal(expectedEncryptErrordData, obfuscatedData) {
-			t.Fatalf("obfuscated data not match spec: expected %x, "+
-				"got %x", expectedEncryptErrordData[:],
-				obfuscatedData[:])
-		}
+		// expectedEncryptErrordData, err := hex.DecodeString(test.obfuscatedData)
+		// if err != nil {
+		// 	t.Fatalf("unable to decode spec obfusacted "+
+		// 		"data: %v", err)
+		// }
+		// if !bytes.Equal(expectedEncryptErrordData, obfuscatedData) {
+		// 	t.Fatalf("obfuscated data not match spec: expected %x, "+
+		// 		"got %x", expectedEncryptErrordData[:],
+		// 		obfuscatedData[:])
+		// }
 	}
 
-	deobfuscator := NewOnionErrorDecrypter(&Circuit{
-		SessionKey:  sessionKey,
-		PaymentPath: paymentPath,
-	})
-
-	// Emulate that sender node receives the failure message and trying to
-	// unwrap it, by applying obfuscation and checking the hmac.
-	decryptedError, err := deobfuscator.DecryptError(obfuscatedData)
-	if err != nil {
-		t.Fatalf("unable to de-obfuscate the onion failure: %v", err)
+	vector := specVector{
+		EncodedFailureMessage: sData,
+		Hops:                  hops,
 	}
 
-	// Check that message have been properly de-obfuscated.
-	if !bytes.Equal(decryptedError.Message, failureData) {
-		t.Fatalf("data not equals, expected: \"%v\", real: \"%v\"",
-			string(failureData), string(decryptedError.Message))
-	}
+	vectorStr, err := json.MarshalIndent(&vector, "", "    ")
+	require.NoError(t, err)
 
-	// We should understand the node from which error have been received.
-	if !bytes.Equal(decryptedError.Sender.SerializeCompressed(),
-		paymentPath[len(paymentPath)-1].SerializeCompressed()) {
-		t.Fatalf("unable to properly conclude from which node in " +
-			"the path we received an error")
-	}
-
-	if decryptedError.SenderIdx != len(paymentPath) {
-		t.Fatalf("unable to properly conclude from which node in " +
-			"the path we received an error")
-	}
+	os.WriteFile("testdata/attributable_error.json", vectorStr, 0600)
 }
