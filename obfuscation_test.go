@@ -2,7 +2,6 @@ package sphinx
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/hex"
 	"reflect"
 	"testing"
@@ -28,7 +27,7 @@ func TestOnionFailure(t *testing.T) {
 	// able to receive the error not only from last hop.
 	errorPath := paymentPath[:len(paymentPath)-1]
 
-	failureData := bytes.Repeat([]byte{'A'}, minOnionErrorLength-sha256.Size)
+	failureData := bytes.Repeat([]byte{'A'}, minOnionErrorLength)
 	sharedSecrets, err := generateSharedSecrets(paymentPath, sessionKey)
 	if err != nil {
 		t.Fatalf("Unexpected error while generating secrets: %v", err)
