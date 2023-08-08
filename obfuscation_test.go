@@ -225,8 +225,8 @@ func TestOnionFailureSpecVector(t *testing.T) {
 				obfuscator.sharedSecret[:])
 		}
 
-		var payload [8]byte
-		binary.BigEndian.PutUint64(payload[:], uint64(i+1))
+		var payload [4]byte
+		binary.BigEndian.PutUint32(payload[:], uint32(i+1))
 		if i == 0 {
 			// Emulate the situation when last hop creates the onion failure
 			// message and send it back.

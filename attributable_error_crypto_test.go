@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var attributableErrorTestStructure = NewAttrErrorStructure(27, 8, 32)
+var attributableErrorTestStructure = NewAttrErrorStructure(20, 4, 4)
 
 // TestAttributableOnionFailure checks the ability of sender of payment to
 // decode the obfuscated onion error.
