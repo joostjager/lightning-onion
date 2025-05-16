@@ -6,19 +6,6 @@ import (
 	"io"
 )
 
-type payloadSource byte
-
-const (
-	// payloadIntermediateNode is a marker to signal that this attributable
-	// error payload is originating from a node between the payer and the
-	// error source.
-	payloadIntermediateNode payloadSource = 0
-
-	// payloadErrorNode is a marker to signal that this attributable error
-	// payload is originating from the error source.
-	payloadErrorNode payloadSource = 1
-)
-
 // AttrErrorStructure contains the parameters that define the structure
 // of the error message that is passed back.
 type AttrErrorStructure struct {
@@ -93,13 +80,7 @@ func (o *AttrErrorStructure) allPayloadsLen() int {
 // payloadLen is the size of the per-node payload. It consists of a 1-byte
 // payload type followed by the payload data.
 func (o *AttrErrorStructure) payloadLen() int {
-	return 1 + o.fixedPayloadLen
-}
-
-// message returns a slice containing the message in the given failure data
-// block. The message is positioned at the beginning of the block.
-func (o *AttrErrorStructure) message(data []byte) []byte {
-	return data[:len(data)-o.hmacsAndPayloadsLen()]
+	return o.fixedPayloadLen
 }
 
 // payloads returns a slice containing all payloads in the given failure

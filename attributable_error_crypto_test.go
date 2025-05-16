@@ -16,19 +16,6 @@ var attributableErrorTestStructure = NewAttrErrorStructure(20, 4, 4)
 // TestAttributableOnionFailure checks the ability of sender of payment to
 // decode the obfuscated onion error.
 func TestAttributableOnionFailure(t *testing.T) {
-	t.Parallel()
-
-	t.Run("32 byte hmac", func(t *testing.T) { testAttributableOnionFailure(t, 32) })
-	t.Run("4 byte hmac", func(t *testing.T) { testAttributableOnionFailure(t, 4) })
-}
-
-// TestAttributableOnionFailure checks the ability of sender of payment to
-// decode the obfuscated onion error.
-func testAttributableOnionFailure(t *testing.T, hmacBytes int) {
-	t.Parallel()
-
-	var structure = NewAttrErrorStructure(27, 8, hmacBytes)
-
 	// Create numHops random sphinx paymentPath.
 	sessionKey, paymentPath := generateRandomPath(t)
 
@@ -41,46 +28,48 @@ func testAttributableOnionFailure(t *testing.T, hmacBytes int) {
 	require.NoError(t, err)
 
 	// Emulate creation of the obfuscator on node where error have occurred.
-	obfuscator := NewOnionAttrErrorEncrypter(
-		sharedSecrets[len(errorPath)-1], structure,
+	obfuscator := NewOnionErrorEncrypter(
+		sharedSecrets[len(errorPath)-1], attributableErrorTestStructure,
 	)
 
 	// Emulate the situation when last hop creates the onion failure
 	// message and send it back.
-	finalPayload := [8]byte{1}
-	obfuscatedData, err := obfuscator.EncryptError(
-		true, failureData, finalPayload[:],
+	holdTime := uint32(42)
+	var attrData, legacyData []byte
+
+	legacyData, attrData, err = obfuscator.EncryptError(
+		true, failureData, attrData, holdTime,
 	)
 	require.NoError(t, err)
-	payloads := [][]byte{finalPayload[:]}
+	payloads := []uint32{holdTime}
 
 	// Emulate that failure message is backward obfuscated on every hop.
 	for i := len(errorPath) - 2; i >= 0; i-- {
 		// Emulate creation of the obfuscator on forwarding node which
 		// propagates the onion failure.
-		obfuscator = NewOnionAttrErrorEncrypter(
-			sharedSecrets[i], structure,
+		obfuscator = NewOnionErrorEncrypter(
+			sharedSecrets[i], attributableErrorTestStructure,
 		)
 
-		intermediatePayload := [8]byte{byte(100 + i)}
-		obfuscatedData, err = obfuscator.EncryptError(
-			false, obfuscatedData, intermediatePayload[:],
+		holdTimeIntermediate := uint32(100 + i)
+		legacyData, attrData, err = obfuscator.EncryptError(
+			false, legacyData, attrData, holdTimeIntermediate,
 		)
 		require.NoError(t, err)
 
-		payloads = append([][]byte{intermediatePayload[:]}, payloads...)
+		payloads = append([]uint32{holdTimeIntermediate}, payloads...)
 	}
 
 	// Emulate creation of the deobfuscator on the receiving onion error
 	// side.
-	deobfuscator := NewOnionAttrErrorDecrypter(&Circuit{
+	deobfuscator := NewOnionErrorDecrypter(&Circuit{
 		SessionKey:  sessionKey,
 		PaymentPath: paymentPath,
-	}, structure)
+	}, attributableErrorTestStructure)
 
 	// Emulate that sender node receive the failure message and trying to
 	// unwrap it, by applying obfuscation and checking the hmac.
-	decryptedError, err := deobfuscator.DecryptError(obfuscatedData)
+	decryptedError, err := deobfuscator.DecryptError(legacyData, attrData)
 	require.NoError(t, err)
 
 	// We should understand the node from which error have been received.
@@ -112,15 +101,16 @@ func TestOnionFailureCorruption(t *testing.T) {
 	require.NoError(t, err)
 
 	// Emulate creation of the obfuscator on node where error have occurred.
-	obfuscator := NewOnionAttrErrorEncrypter(
+	obfuscator := NewOnionErrorEncrypter(
 		sharedSecrets[len(errorPath)-1], attributableErrorTestStructure,
 	)
 
 	// Emulate the situation when last hop creates the onion failure
 	// message and send it back.
-	payload := [4]byte{1}
-	obfuscatedData, err := obfuscator.EncryptError(
-		true, failureData, payload[:],
+	holdTime := uint32(1)
+	var attrData []byte
+	legacyData, attrData, err := obfuscator.EncryptError(
+		true, failureData, attrData, holdTime,
 	)
 	require.NoError(t, err)
 
@@ -128,33 +118,33 @@ func TestOnionFailureCorruption(t *testing.T) {
 	for i := len(errorPath) - 2; i >= 0; i-- {
 		// Emulate creation of the obfuscator on forwarding node which
 		// propagates the onion failure.
-		obfuscator = NewOnionAttrErrorEncrypter(
+		obfuscator = NewOnionErrorEncrypter(
 			sharedSecrets[i], attributableErrorTestStructure,
 		)
 
-		payload := [4]byte{byte(100 + i)}
-		obfuscatedData, err = obfuscator.EncryptError(
-			false, obfuscatedData, payload[:],
+		holdTime := uint32(100 + i)
+		legacyData, attrData, err = obfuscator.EncryptError(
+			false, failureData, attrData, holdTime,
 		)
 		require.NoError(t, err)
 
 		// Hop 1 (the second hop from the sender pov) is corrupting the
 		// failure message.
 		if i == 1 {
-			obfuscatedData[0] ^= 255
+			attrData[0] ^= 255
 		}
 	}
 
 	// Emulate creation of the deobfuscator on the receiving onion error
 	// side.
-	deobfuscator := NewOnionAttrErrorDecrypter(&Circuit{
+	deobfuscator := NewOnionErrorDecrypter(&Circuit{
 		SessionKey:  sessionKey,
 		PaymentPath: paymentPath,
 	}, attributableErrorTestStructure)
 
 	// Emulate that sender node receive the failure message and trying to
 	// unwrap it, by applying obfuscation and checking the hmac.
-	decryptedError, err := deobfuscator.DecryptError(obfuscatedData)
+	decryptedError, err := deobfuscator.DecryptError(legacyData, attrData)
 	require.NoError(t, err)
 
 	// Assert that the second hop is correctly identified as the error
@@ -194,7 +184,10 @@ func TestAttributableFailureSpecVector(t *testing.T) {
 	sessionKey, err := getSpecSessionKey()
 	require.NoError(t, err)
 
-	var obfuscatedData []byte
+	var (
+		legacyData []byte
+		attrData   []byte
+	)
 	sharedSecrets, err := generateSharedSecrets(paymentPath, sessionKey)
 	require.NoError(t, err)
 
@@ -204,7 +197,7 @@ func TestAttributableFailureSpecVector(t *testing.T) {
 		expectedSharedSecret, err := hex.DecodeString(test.SharedSecret)
 		require.NoError(t, err)
 
-		obfuscator := NewOnionAttrErrorEncrypter(
+		obfuscator := NewOnionErrorEncrypter(
 			sharedSecrets[len(sharedSecrets)-1-i],
 			attributableErrorTestStructure,
 		)
@@ -213,20 +206,20 @@ func TestAttributableFailureSpecVector(t *testing.T) {
 			t, expectedSharedSecret, obfuscator.sharedSecret[:],
 		)
 
-		payload := [4]byte{0, 0, 0, byte(i + 1)}
+		holdTime := uint32(i + 1)
 
 		if i == 0 {
 			// Emulate the situation when last hop creates the onion
 			// failure message and send it back.
-			obfuscatedData, err = obfuscator.EncryptError(
-				true, failureData, payload[:],
+			legacyData, attrData, err = obfuscator.EncryptError(
+				true, failureData, attrData, holdTime,
 			)
 			require.NoError(t, err)
 		} else {
 			// Emulate the situation when forward node obfuscates
 			// the onion failure.
-			obfuscatedData, err = obfuscator.EncryptError(
-				false, obfuscatedData, payload[:],
+			legacyData, attrData, err = obfuscator.EncryptError(
+				false, legacyData, attrData, holdTime,
 			)
 			require.NoError(t, err)
 		}
@@ -237,26 +230,37 @@ func TestAttributableFailureSpecVector(t *testing.T) {
 			test.EncryptedMessage,
 		)
 		require.NoError(t, err)
-		require.Equal(t, expectedEncryptErrorData, obfuscatedData)
+
+		require.Equal(t, expectedEncryptErrorData, attrData)
 	}
 
-	deobfuscator := NewOnionAttrErrorDecrypter(&Circuit{
+	deobfuscator := NewOnionErrorDecrypter(&Circuit{
 		SessionKey:  sessionKey,
 		PaymentPath: paymentPath,
 	}, attributableErrorTestStructure)
 
 	// Emulate that sender node receives the failure message and trying to
 	// unwrap it, by applying obfuscation and checking the hmac.
-	decryptedError, err := deobfuscator.DecryptError(obfuscatedData)
+	decryptedError, err := deobfuscator.DecryptError(legacyData, attrData)
 	require.NoError(t, err)
 
 	// Check that message have been properly de-obfuscated.
-	require.Equal(t, decryptedError.Message, failureData)
+	require.Equal(t, failureData, decryptedError.Message)
 
 	// We should understand the node from which error have been received.
 	require.Equal(t,
-		decryptedError.Sender.SerializeCompressed(),
 		paymentPath[len(paymentPath)-1].SerializeCompressed(),
+		decryptedError.Sender.SerializeCompressed(),
+	)
+
+	require.Equal(t, len(paymentPath), decryptedError.SenderIdx)
+
+	// Now let's verify the attributable error fields.
+	require.Equal(t, decryptedError.Message, failureData)
+
+	require.Equal(t,
+		paymentPath[len(paymentPath)-1].SerializeCompressed(),
+		decryptedError.Sender.SerializeCompressed(),
 	)
 
 	require.Equal(t, len(paymentPath), decryptedError.SenderIdx)
@@ -272,7 +276,7 @@ func TestAttributableOnionFailureZeroesMessage(t *testing.T) {
 
 	// Emulate creation of the deobfuscator on the receiving onion error
 	// side.
-	deobfuscator := NewOnionAttrErrorDecrypter(&Circuit{
+	deobfuscator := NewOnionErrorDecrypter(&Circuit{
 		SessionKey:  sessionKey,
 		PaymentPath: paymentPath,
 	}, attributableErrorTestStructure)
@@ -281,7 +285,7 @@ func TestAttributableOnionFailureZeroesMessage(t *testing.T) {
 	// unwrap it, by applying obfuscation and checking the hmac.
 	obfuscatedData := make([]byte, 20000)
 
-	decryptedError, err := deobfuscator.DecryptError(obfuscatedData)
+	decryptedError, err := deobfuscator.DecryptError(obfuscatedData, nil)
 	require.NoError(t, err)
 
 	require.Equal(t, 1, decryptedError.SenderIdx)
@@ -297,7 +301,7 @@ func TestAttributableOnionFailureShortMessage(t *testing.T) {
 
 	// Emulate creation of the deobfuscator on the receiving onion error
 	// side.
-	deobfuscator := NewOnionAttrErrorDecrypter(&Circuit{
+	deobfuscator := NewOnionErrorDecrypter(&Circuit{
 		SessionKey:  sessionKey,
 		PaymentPath: paymentPath,
 	}, attributableErrorTestStructure)
@@ -305,10 +309,12 @@ func TestAttributableOnionFailureShortMessage(t *testing.T) {
 	// Emulate that sender node receive the failure message and trying to
 	// unwrap it, by applying obfuscation and checking the hmac.
 	obfuscatedData := make([]byte, deobfuscator.hmacsAndPayloadsLen()-1)
+	failureMsg := bytes.Repeat([]byte{1}, minOnionErrorLength)
 
-	decryptedError, err := deobfuscator.DecryptError(obfuscatedData)
+	decryptedError, err := deobfuscator.DecryptError(failureMsg, obfuscatedData)
 	require.NoError(t, err)
 
+	require.Equal(t, 1, decryptedError.SenderIdx)
 	require.Equal(t, 1, decryptedError.SenderIdx)
 }
 
@@ -382,7 +388,7 @@ func TestShiftHmacsRight(t *testing.T) {
 
 	hmacs := createTestHmacs()
 
-	o := NewOnionAttrErrorEncrypter(
+	o := NewOnionErrorEncrypter(
 		Hash256{},
 		NewAttrErrorStructure(testMaxHops, 0, 32),
 	)
@@ -409,7 +415,7 @@ func TestShiftHmacsLeft(t *testing.T) {
 
 	hmacs := createTestHmacs()
 
-	o := NewOnionAttrErrorDecrypter(
+	o := NewOnionErrorDecrypter(
 		nil,
 		NewAttrErrorStructure(testMaxHops, 0, 32),
 	)
