@@ -340,17 +340,42 @@ const minOnionErrorLength = minPaddedOnionErrorLength + sha256.Size
 // returned that contains the decrypted error message and information of the
 // error sender. We also report the hold times in ms for each hop on the error
 // path.
+//
+// The strictAttribution flag controls the behavior of the decryption logic
+// surrounding the presence of attribution data:
+//
+//   - If set, then the first node with bad attribution data will be blamed
+//     immediately.
+//
+//   - If unset, decryption continues optimistically until a successful error
+//     message decryption occurs, regardless of attribution data validity. Hold
+//     times are still extracted for nodes that provided valid attribution data.
+//
+//nolint:funlen,cyclop // Constant-time per-hop decryption keeps this long.
 func (o *OnionErrorDecrypter) DecryptError(encryptedData []byte,
-	attrData []byte) (*DecryptedError, error) {
+	attrData []byte, strictAttribution bool) (*DecryptedError, error) {
 
-	// Ensure the error message and attribution data length is as expected.
-	if len(encryptedData) < minOnionErrorLength ||
-		len(attrData) < o.hmacsAndPayloadsLen() {
+	// Ensure the error message field is present and has the correct length.
+	if len(encryptedData) < minOnionErrorLength {
+		return nil, fmt.Errorf("invalid error length: "+
+			"expected at least %v got %v", minOnionErrorLength,
+			len(encryptedData))
+	}
 
-		return &DecryptedError{
-			Sender:    o.circuit.PaymentPath[0],
-			SenderIdx: 1,
-		}, nil
+	validAttr := true
+
+	// If we're decrypting with strict attribution, we need to have the
+	// correct attribution data present too. If strictAttribution is set
+	// then we immediately blame the first hop.
+	if len(attrData) < o.hmacsAndPayloadsLen() {
+		if strictAttribution {
+			return &DecryptedError{
+				Sender:    o.circuit.PaymentPath[0],
+				SenderIdx: 1,
+			}, nil
+		}
+
+		validAttr = false
 	}
 
 	sharedSecrets, _, err := generateSharedSecrets(
@@ -393,49 +418,67 @@ func (o *OnionErrorDecrypter) DecryptError(encryptedData []byte,
 
 		// With the shared secret, we'll now strip off a layer of
 		// encryption from the encrypted failure and attribution
-		// data.
+		// data. This needs to be done before parsing the attribution
+		// data, as the attribution data HMACs commit to it.
 		failData = onionEncrypt(Ammag, &sharedSecret, failData)
-		attrData = onionEncrypt(AmmagExt, &sharedSecret, attrData)
 
-		payloads := o.payloads(attrData)
-		hmacs := o.hmacs(attrData)
+		// If the attribution data are valid then do another round of
+		// attribution data decryption.
+		if validAttr { //nolint:nestif
+			attrData = onionEncrypt(
+				AmmagExt, &sharedSecret, attrData,
+			)
 
-		// Let's calculate the HMAC we expect for the corresponding
-		// payloads.
-		position := o.hopCount - i - 1
-		expectedAttrHmac := o.calculateHmac(
-			sharedSecret, position, failData, payloads, hmacs,
-		)
+			payloads := o.payloads(attrData)
+			hmacs := o.hmacs(attrData)
 
-		// Let's retrieve the actual HMAC from the correct position in
-		// the HMACs array.
-		actualAttrHmac := hmacs[i*o.hmacSize : (i+1)*o.hmacSize]
+			// Let's calculate the HMAC we expect for the
+			// corresponding payloads.
+			position := o.hopCount - i - 1
+			expectedAttrHmac := o.calculateHmac(
+				sharedSecret, position, failData, payloads,
+				hmacs,
+			)
 
-		// If the hmac does not match up, exit with a nil message. This
-		// is not done for the dummy iterations.
-		if !bytes.Equal(actualAttrHmac, expectedAttrHmac) &&
-			sender == 0 && i < len(o.circuit.PaymentPath) {
+			// Let's retrieve the actual HMAC from the correct
+			// position in the HMACs array.
+			actualAttrHmac := hmacs[i*o.hmacSize : (i+1)*o.hmacSize]
 
-			sender = i + 1
-			msg = nil
+			// If the hmac does not match up, exit with a nil
+			// message. This is not done for the dummy iterations.
+			if !bytes.Equal(actualAttrHmac, expectedAttrHmac) &&
+				sender == 0 && i < len(o.circuit.PaymentPath) {
+
+				if strictAttribution {
+					sender = i + 1
+					msg = nil
+				} else {
+					// Flag the attribution data as invalid
+					// from this point onwards. This will
+					// prevent the loop from trying to
+					// extract anything from the attribution
+					// data.
+					validAttr = false
+				}
+			}
+
+			// Extract hold time from the payload.
+			holdTime := binary.BigEndian.Uint32(
+				payloads[:o.fixedPayloadLen],
+			)
+			if sender == 0 && validAttr {
+				// Store hold time reported by this node.
+				holdTimes = append(holdTimes, holdTime)
+
+				// Update the message.
+				msg = failData[sha256.Size:]
+			}
+
+			// Shift payloads and hmacs to the left to prepare for
+			// the next iteration.
+			o.shiftPayloadsLeft(payloads)
+			o.shiftHmacsLeft(hmacs)
 		}
-
-		// Extract hold time from the payload.
-		holdTime := binary.BigEndian.Uint32(
-			payloads[:o.fixedPayloadLen],
-		)
-		if sender == 0 {
-			// Store hold time reported by this node.
-			holdTimes = append(holdTimes, holdTime)
-
-			// Update the message.
-			msg = failData[sha256.Size:]
-		}
-
-		// Shift payloads and hmacs to the left to prepare for the next
-		// iteration.
-		o.shiftPayloadsLeft(payloads)
-		o.shiftHmacsLeft(hmacs)
 
 		// Next, we'll need to separate the failure data, from the MAC
 		// itself so we can reconstruct and verify it.
